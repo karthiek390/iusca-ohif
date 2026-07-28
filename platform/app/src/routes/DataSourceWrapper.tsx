@@ -5,8 +5,40 @@ import { Enums, ExtensionManager, MODULE_TYPES, log } from '@ohif/core';
 //
 import { extensionManager } from '../App';
 import { useParams, useLocation } from 'react-router';
-import { useNavigate } from 'react-router-dom';
 import useSearchParams from '../hooks/useSearchParams';
+
+const CFNDAP_SHARED_TOKEN_KEY = 'token';
+const LOGOUT_ROUTE = '/auth/logout';
+
+const readCfndapSharedToken = () => {
+  try {
+    const token = window.localStorage.getItem(CFNDAP_SHARED_TOKEN_KEY);
+    return token && token.trim().length > 0 ? token : '';
+  } catch (error) {
+    console.warn('[OHIF] Unable to read shared cfN-DAP token from localStorage.', error);
+    return '';
+  }
+};
+
+const stripLegacyTokenParam = () => {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has('token')) {
+    return;
+  }
+
+  url.searchParams.delete('token');
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+};
+
+const redirectToLogout = () => {
+  if (window.location.pathname === LOGOUT_ROUTE) {
+    return;
+  }
+
+  window.location.assign(LOGOUT_ROUTE);
+};
+
+const getHttpStatus = error => error?.status || error?.response?.status;
 
 /**
  * Determines if two React Router location objects are the same.
@@ -29,12 +61,15 @@ const areLocationsTheSame = (location0, location1) => {
  */
 function DataSourceWrapper(props: withAppTypes) {
   const { servicesManager } = props;
-  const navigate = useNavigate();
   const { children: LayoutTemplate, ...rest } = props;
   const params = useParams();
   const location = useLocation();
   const lowerCaseSearchParams = useSearchParams({ lowerCaseKeys: true });
   const query = useSearchParams();
+  const legacyUrlToken = lowerCaseSearchParams.get('token');
+  const primaryStudyOnly = lowerCaseSearchParams.get('primarystudyonly') === 'true';
+  const primaryStudyUID =
+    lowerCaseSearchParams.get('primarystudyuid') || lowerCaseSearchParams.get('studyinstanceuids');
   // Route props --> studies.mapParams
   // mapParams --> studies.search
   // studies.search --> studies.processResults
@@ -49,6 +84,13 @@ function DataSourceWrapper(props: withAppTypes) {
     pageNumber: 1,
     location: 'Not a valid location, causes first load to occur',
   };
+
+  useEffect(() => {
+    if (legacyUrlToken) {
+      // Remove old URL-borne auth so copied OHIF links do not carry credentials.
+      stripLegacyTokenParam();
+    }
+  }, [legacyUrlToken, location]);
 
   const getInitialDataSourceName = useCallback(() => {
     // TODO - get the variable from the props all the time...
@@ -149,13 +191,22 @@ function DataSourceWrapper(props: withAppTypes) {
 
     // 204: no content
     async function getData() {
+      if (!readCfndapSharedToken()) {
+        redirectToLogout();
+        return;
+      }
+
       setIsLoading(true);
       log.time(Enums.TimingEnum.SEARCH_TO_LIST);
       const studies = await dataSource.query.studies.search(queryFilterValues);
+      const filteredStudies =
+        primaryStudyOnly && primaryStudyUID
+          ? (studies || []).filter(study => study?.StudyInstanceUID === primaryStudyUID)
+          : studies || [];
 
       setData({
-        studies: studies || [],
-        total: studies.length,
+        studies: filteredStudies,
+        total: filteredStudies.length,
         resultsPerPage: queryFilterValues.resultsPerPage,
         pageNumber: queryFilterValues.pageNumber,
         location,
@@ -189,6 +240,11 @@ function DataSourceWrapper(props: withAppTypes) {
       if (isDataInvalid) {
         getData().catch(e => {
           console.error(e);
+
+          if (getHttpStatus(e) === 401 || !readCfndapSharedToken()) {
+            redirectToLogout();
+            return;
+          }
 
           const { configurationAPI, friendlyName } = dataSource.getConfig();
           // If there is a data source configuration API, then the Worklist will popup the dialog to attempt to configure it
@@ -265,6 +321,8 @@ function _getQueryFilterValues(query, queryLimit) {
     studyDescription: query.get('description'),
     modalitiesInStudy: query.get('modalities') && query.get('modalities').split(','),
     accessionNumber: query.get('accession'),
+    primaryStudyOnly: query.get('primarystudyonly'),
+    primaryStudyUID: query.get('primarystudyuid') || query.get('studyinstanceuids'),
     //
     startDate: query.get('startdate'),
     endDate: query.get('enddate'),
