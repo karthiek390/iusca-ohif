@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useImageViewer } from '@ohif/ui-next';
 import { useSystem, utils } from '@ohif/core';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useViewportGrid, StudyBrowser, Separator } from '@ohif/ui-next';
 import { PanelStudyBrowserHeader } from './PanelStudyBrowserHeader';
 import { defaultActionIcons } from './constants';
@@ -28,6 +28,8 @@ function PanelStudyBrowser({
   const { servicesManager, commandsManager, extensionManager } = useSystem();
   const { displaySetService, customizationService } = servicesManager.services;
   const navigate = useNavigate();
+  const { search } = useLocation();
+  const primaryStudyOnly = new URLSearchParams(search).get('primaryStudyOnly') === 'true';
   const studyMode =
     (customizationService.getCustomization('studyBrowser.studyMode') as string) || 'all';
 
@@ -129,12 +131,13 @@ function PanelStudyBrowser({
 
       let qidoStudiesForPatient = qidoForStudyUID;
 
-      // try to fetch the prior studies based on the patientID if the
-      // server can respond.
-      try {
-        qidoStudiesForPatient = await getStudiesForPatientByMRN(qidoForStudyUID);
-      } catch (error) {
-        console.warn(error);
+      // Scoped launches must not query same-patient priors; the primary study is already resolved above.
+      if (!primaryStudyOnly) {
+        try {
+          qidoStudiesForPatient = await getStudiesForPatientByMRN(qidoForStudyUID);
+        } catch (error) {
+          console.warn(error);
+        }
       }
 
       const mappedStudies = _mapDataSourceStudies(qidoStudiesForPatient);
@@ -160,7 +163,7 @@ function PanelStudyBrowser({
     }
 
     StudyInstanceUIDs.forEach(sid => fetchStudiesForPatient(sid));
-  }, [StudyInstanceUIDs, dataSource, getStudiesForPatientByMRN, navigate]);
+  }, [StudyInstanceUIDs, dataSource, getStudiesForPatientByMRN, navigate, primaryStudyOnly]);
 
   // ~~ Initial Thumbnails
   useEffect(() => {
