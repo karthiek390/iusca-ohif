@@ -86,6 +86,9 @@ export async function defaultRouteInit(
 
   log.time(Enums.TimingEnum.STUDY_TO_DISPLAY_SETS);
   log.time(Enums.TimingEnum.STUDY_TO_FIRST_IMAGE);
+  (window as any).__CFNDAP_OHIF_DEBUG__?.markStudyLoadStart?.({
+    studyCount: studyInstanceUIDs?.length || 0,
+  });
 
   const allRetrieves = studyInstanceUIDs.map(StudyInstanceUID =>
     dataSource.retrieve.series.metadata({

@@ -43,6 +43,52 @@ import { initializeWebWorkerProgressHandler } from './utils/initWebWorkerProgres
 
 const { registerColormap } = csUtilities.colormap;
 
+function installCfndapRequestPoolInstrumentation() {
+  const debugApi = (window as any).__CFNDAP_OHIF_DEBUG__;
+  if (!debugApi?.enabled?.()) {
+    return;
+  }
+
+  const poolManager = imageLoadPoolManager as any;
+  if (poolManager.__cfndapInstrumentationInstalled) {
+    return;
+  }
+
+  const queuedByType: Record<string, number> = {};
+  const activeByType: Record<string, number> = {};
+  const report = () => {
+    debugApi.setRequestPoolStats({
+      queued: { ...queuedByType },
+      active: { ...activeByType },
+      limits: { ...poolManager.maxNumRequests },
+    });
+  };
+  const originalAddRequest = poolManager.addRequest.bind(poolManager);
+
+  poolManager.addRequest = (requestFn, requestType, additionalDetails, priority) => {
+    queuedByType[requestType] = (queuedByType[requestType] || 0) + 1;
+    report();
+    return originalAddRequest(
+      async () => {
+        queuedByType[requestType] = Math.max(0, (queuedByType[requestType] || 1) - 1);
+        activeByType[requestType] = (activeByType[requestType] || 0) + 1;
+        report();
+        try {
+          return await requestFn();
+        } finally {
+          activeByType[requestType] = Math.max(0, (activeByType[requestType] || 1) - 1);
+          report();
+        }
+      },
+      requestType,
+      additionalDetails,
+      priority
+    );
+  };
+  poolManager.__cfndapInstrumentationInstalled = true;
+  report();
+}
+
 // TODO: Cypress tests are currently grabbing this from the window?
 (window as any).cornerstone = cornerstone;
 (window as any).cornerstoneTools = cornerstoneTools;
@@ -194,6 +240,7 @@ export default async function init({
     [RequestTypes.Prefetch]: appConfig?.maxNumRequests?.prefetch || 5,
     [RequestTypes.Compute]: appConfig?.maxNumRequests?.compute || 10,
   };
+  installCfndapRequestPoolInstrumentation();
 
   initWADOImageLoader(userAuthenticationService, appConfig, extensionManager);
 

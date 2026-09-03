@@ -41,6 +41,10 @@ function imageRenderedListener(evt) {
     return;
   }
   const { TimingEnum } = Enums;
+  (window as any).__CFNDAP_OHIF_DEBUG__?.markFirstImageRendered?.({
+    viewportId: evt.detail.viewportId || null,
+    viewportStatus: evt.detail.viewportStatus || null,
+  });
   log.timeEnd(TimingEnum.DISPLAY_SETS_TO_FIRST_IMAGE);
   log.timeEnd(TimingEnum.STUDY_TO_FIRST_IMAGE);
   log.timeEnd(TimingEnum.SCRIPT_TO_VIEW);
