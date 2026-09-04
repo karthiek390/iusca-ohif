@@ -4,6 +4,54 @@ import isSeriesFilterUsed from '../../utils/isSeriesFilterUsed';
 
 const { seriesSortCriteria, getSplitParam } = utils;
 
+function installCfndapRuntimeInstrumentation({ servicesManager, primaryStudyUID }) {
+  const debugApi = (window as any).__CFNDAP_OHIF_DEBUG__;
+  if (!debugApi?.enabled?.()) {
+    return null;
+  }
+
+  const { displaySetService, cornerstoneCacheService } = servicesManager.services;
+  let timer;
+  const report = label => {
+    const displaySets = displaySetService?.getActiveDisplaySets?.() || [];
+    const study = primaryStudyUID ? DicomMetadataStore.getStudy(primaryStudyUID) : null;
+    const series = study?.series || [];
+    const metrics = {
+      metadataStudyCount: DicomMetadataStore.getStudyInstanceUIDs?.().length || 0,
+      metadataSeriesCount: series.length,
+      metadataInstanceCount: series.reduce(
+        (count, seriesMetadata) => count + (seriesMetadata?.instances?.length || 0),
+        0
+      ),
+      displaySetCount: displaySets.length,
+      thumbnailCount: displaySets.filter(displaySet => Boolean(displaySet?.thumbnailSrc)).length,
+      imageCacheBytes: cornerstoneCacheService?.getCacheSize?.() ?? null,
+      imageCacheFreeBytes: cornerstoneCacheService?.getCacheFreeSpace?.() ?? null,
+    };
+
+    // Keep only scalar values globally so diagnostics do not retain image or metadata objects.
+    (window as any).__CFNDAP_OHIF_RUNTIME__ = { lastSnapshot: metrics };
+    debugApi.snapshot(label, { runtime: metrics });
+  };
+  const scheduleReport = label => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => report(label), 500);
+  };
+  const displaySetSubscription = displaySetService?.subscribe?.(
+    displaySetService.EVENTS.DISPLAY_SETS_CHANGED,
+    () => scheduleReport('display-sets-updated')
+  );
+
+  scheduleReport('runtime-instrumentation-ready');
+  return {
+    scheduleReport,
+    unsubscribe: () => {
+      window.clearTimeout(timer);
+      displaySetSubscription?.unsubscribe?.();
+    },
+  };
+}
+
 /**
  * Initialize the route.
  *
@@ -56,6 +104,13 @@ export async function defaultRouteInit(
 
   const unsubscriptions = [];
   const issuedWarningSeries = [];
+  const runtimeInstrumentation = installCfndapRuntimeInstrumentation({
+    servicesManager,
+    primaryStudyUID: studyInstanceUIDs?.[0],
+  });
+  if (runtimeInstrumentation) {
+    unsubscriptions.push(runtimeInstrumentation.unsubscribe);
+  }
   const { unsubscribe: instanceAddedUnsubscribe } = DicomMetadataStore.subscribe(
     DicomMetadataStore.EVENTS.INSTANCES_ADDED,
     function ({ StudyInstanceUID, SeriesInstanceUID, madeInClient = false }) {
@@ -79,6 +134,7 @@ export async function defaultRouteInit(
       }
 
       displaySetService.makeDisplaySets(seriesMetadata.instances, { madeInClient });
+      runtimeInstrumentation?.scheduleReport('metadata-updated');
     }
   );
 

@@ -1,7 +1,7 @@
 /* eslint-disable react/jsx-props-no-spreading */
 import React, { useCallback, useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
-import { DicomMetadataStore, Enums, ExtensionManager, MODULE_TYPES, log } from '@ohif/core';
+import { Enums, ExtensionManager, MODULE_TYPES, log } from '@ohif/core';
 //
 import { extensionManager } from '../App';
 import { useParams, useLocation } from 'react-router';
@@ -39,28 +39,6 @@ const redirectToLogout = () => {
 };
 
 const getHttpStatus = error => error?.status || error?.response?.status;
-
-const getCfndapDebugApi = () => (window as any).__CFNDAP_OHIF_DEBUG__;
-
-const getCfndapRuntimeMetrics = ({ servicesManager, primaryStudyUID }) => {
-  const { displaySetService, cornerstoneCacheService } = servicesManager.services;
-  const displaySets = displaySetService?.getActiveDisplaySets?.() || [];
-  const study = primaryStudyUID ? DicomMetadataStore.getStudy(primaryStudyUID) : null;
-  const series = study?.series || [];
-
-  return {
-    metadataStudyCount: DicomMetadataStore.getStudyInstanceUIDs?.().length || 0,
-    metadataSeriesCount: series.length,
-    metadataInstanceCount: series.reduce(
-      (count, seriesMetadata) => count + (seriesMetadata?.instances?.length || 0),
-      0
-    ),
-    displaySetCount: displaySets.length,
-    thumbnailCount: displaySets.filter(displaySet => Boolean(displaySet?.thumbnailSrc)).length,
-    imageCacheBytes: cornerstoneCacheService?.getCacheSize?.() ?? null,
-    imageCacheFreeBytes: cornerstoneCacheService?.getCacheFreeSpace?.() ?? null,
-  };
-};
 
 /**
  * Determines if two React Router location objects are the same.
@@ -169,41 +147,6 @@ function DataSourceWrapper(props: withAppTypes) {
 
   const [data, setData] = useState(DEFAULT_DATA);
   const [isLoading, setIsLoading] = useState(false);
-
-  useEffect(() => {
-    const debugApi = getCfndapDebugApi();
-    if (!debugApi?.enabled?.()) {
-      return;
-    }
-
-    let timer;
-    const report = label => {
-      const metrics = getCfndapRuntimeMetrics({ servicesManager, primaryStudyUID });
-      // Keep only scalar values globally so diagnostics do not retain image or metadata objects.
-      (window as any).__CFNDAP_OHIF_RUNTIME__ = { lastSnapshot: metrics };
-      debugApi.snapshot(label, { runtime: metrics });
-    };
-    const scheduleReport = label => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => report(label), 500);
-    };
-    const instanceSubscription = DicomMetadataStore.subscribe(
-      DicomMetadataStore.EVENTS.INSTANCES_ADDED,
-      () => scheduleReport('metadata-updated')
-    );
-    const displaySetService = servicesManager.services.displaySetService;
-    const displaySetSubscription = displaySetService?.subscribe?.(
-      displaySetService.EVENTS.DISPLAY_SETS_CHANGED,
-      () => scheduleReport('display-sets-updated')
-    );
-
-    scheduleReport('runtime-instrumentation-ready');
-    return () => {
-      window.clearTimeout(timer);
-      instanceSubscription?.unsubscribe?.();
-      displaySetSubscription?.unsubscribe?.();
-    };
-  }, [primaryStudyUID, servicesManager]);
 
   /**
    * The effect to initialize the data source whenever it changes. Similar to
