@@ -40,6 +40,7 @@ import { usePositionPresentationStore } from './stores/usePositionPresentationSt
 import { useSegmentationPresentationStore } from './stores/useSegmentationPresentationStore';
 import { imageRetrieveMetadataProvider } from '@cornerstonejs/core/utilities';
 import { initializeWebWorkerProgressHandler } from './utils/initWebWorkerProgressHandler';
+import initCfndapSeriesCacheInstrumentation from './utils/initCfndapSeriesCacheInstrumentation';
 
 const { registerColormap } = csUtilities.colormap;
 
@@ -128,6 +129,7 @@ export default async function init({
   if (maxCacheSize) {
     cornerstone.cache.setMaxCacheSize(maxCacheSize);
   }
+  initCfndapSeriesCacheInstrumentation(OHIF);
 
   initCornerstoneTools();
 
