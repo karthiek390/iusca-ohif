@@ -1,6 +1,8 @@
 import { cache, eventTarget, EVENTS } from '@cornerstonejs/core';
 
 const MAX_EVENT_SAMPLES = 5000;
+const AUTO_EVICTION_FLAG = 'cfndap_ohif_auto_evict_inactive_series';
+const AUTO_EVICTION_DELAY_MS = 750;
 
 type CacheEntry = {
   imageId: string;
@@ -38,6 +40,19 @@ export default function initCfndapSeriesCacheInstrumentation(ohif, segmentationS
 
   const entriesByImageId = new Map<string, CacheEntry>();
   const events: CacheEvent[] = [];
+  const autoEvictions = [];
+  let autoEvictionTimer;
+
+  const isAutoEvictionEnabled = () => {
+    try {
+      return (
+        window.localStorage.getItem(AUTO_EVICTION_FLAG) === '1' ||
+        new URLSearchParams(window.location.search).get('cfndapAutoEvictInactiveSeries') === '1'
+      );
+    } catch {
+      return false;
+    }
+  };
 
   const appendEvent = (action: CacheEvent['action'], entry: CacheEntry) => {
     if (events.length < MAX_EVENT_SAMPLES) {
@@ -118,6 +133,7 @@ export default function initCfndapSeriesCacheInstrumentation(ohif, segmentationS
     };
     entriesByImageId.set(imageId, entry);
     appendEvent('added', entry);
+    scheduleAutoEviction();
   };
 
   const originalRemoveImageLoadObject = csCache.removeImageLoadObject.bind(csCache);
@@ -222,10 +238,53 @@ export default function initCfndapSeriesCacheInstrumentation(ohif, segmentationS
     };
   };
 
+  const evictFullyInactiveSeries = () => {
+    const hasEnabledViewportImages = [...entriesByImageId.keys()].some(isInEnabledViewport);
+    if (!hasEnabledViewportImages) {
+      return [];
+    }
+
+    const seriesUIDs = new Set(
+      [...entriesByImageId.values()]
+        .map(entry => entry.seriesInstanceUID)
+        .filter((seriesInstanceUID): seriesInstanceUID is string => Boolean(seriesInstanceUID))
+    );
+    const results = [];
+
+    for (const seriesInstanceUID of seriesUIDs) {
+      const candidates = getEvictionCandidates(seriesInstanceUID);
+      if (!candidates.length || candidates.some(candidate => candidate.blockedBy !== null)) {
+        continue;
+      }
+
+      const result = evictSeries(seriesInstanceUID, { confirm: true });
+      if (result.removedImageCount) {
+        results.push(result);
+      }
+    }
+
+    if (results.length) {
+      autoEvictions.push({ atMs: Math.round(performance.now()), results });
+      console.log('[CFNDAP][OHIF][auto-series-cache-eviction]', results);
+    }
+    return results;
+  };
+
+  function scheduleAutoEviction() {
+    if (!isAutoEvictionEnabled()) {
+      return;
+    }
+
+    window.clearTimeout(autoEvictionTimer);
+    autoEvictionTimer = window.setTimeout(evictFullyInactiveSeries, AUTO_EVICTION_DELAY_MS);
+  }
+
   (window as any).__CFNDAP_OHIF_CACHE_DEBUG__ = {
     getSummary,
     getEvictionCandidates,
     evictSeries,
+    isAutoEvictionEnabled,
+    runAutoEviction: evictFullyInactiveSeries,
     printSummary() {
       const summary = getSummary();
       console.table(summary.series);
@@ -235,6 +294,7 @@ export default function initCfndapSeriesCacheInstrumentation(ohif, segmentationS
     state: {
       entriesByImageId,
       events,
+      autoEvictions,
     },
   };
 
