@@ -129,7 +129,6 @@ export default async function init({
   if (maxCacheSize) {
     cornerstone.cache.setMaxCacheSize(maxCacheSize);
   }
-  initCfndapSeriesCacheInstrumentation(OHIF);
 
   initCornerstoneTools();
 
@@ -163,6 +162,7 @@ export default async function init({
   window.services = servicesManager.services;
   window.extensionManager = extensionManager;
   window.commandsManager = commandsManager;
+  initCfndapSeriesCacheInstrumentation(OHIF, segmentationService);
 
   if (appConfig.showCPUFallbackMessage && cornerstone.getShouldUseCPURendering()) {
     _showCPURenderingModal(uiModalService, hangingProtocolService);

@@ -16,12 +16,16 @@ type CacheEvent = CacheEntry & {
   atMs: number;
 };
 
+type EvictionCandidate = CacheEntry & {
+  blockedBy: string | null;
+};
+
 function getImageBytes(image): number | null {
   const size = Number(image?.sizeInBytes ?? image?.imageFrame?.pixelData?.byteLength);
   return Number.isFinite(size) ? size : null;
 }
 
-export default function initCfndapSeriesCacheInstrumentation(ohif) {
+export default function initCfndapSeriesCacheInstrumentation(ohif, segmentationService) {
   const debugApi = (window as any).__CFNDAP_OHIF_DEBUG__;
   if (!debugApi?.enabled?.()) {
     return;
@@ -63,6 +67,38 @@ export default function initCfndapSeriesCacheInstrumentation(ohif) {
     } catch {
       return false;
     }
+  };
+
+  const isReferencedByVolume = (imageId: string) => {
+    const volumeId = csCache.imageIdsToVolumeIdCache?.get?.(imageId);
+    if (volumeId) {
+      return true;
+    }
+
+    const volumes = csCache._volumeCache?.values?.() || [];
+    return Array.from(volumes).some((volume: any) => volume?.imageIds?.includes(imageId));
+  };
+
+  const isReferencedBySegmentation = (imageId: string) => {
+    const segmentations = segmentationService?.getSegmentations?.() || [];
+    return segmentations.some(segmentation =>
+      Object.values(segmentation.representationData || {}).some((representation: any) =>
+        representation?.imageIds?.includes(imageId)
+      )
+    );
+  };
+
+  const getBlockedBy = (imageId: string) => {
+    if (isInEnabledViewport(imageId)) {
+      return 'enabled-viewport';
+    }
+    if (isReferencedByVolume(imageId)) {
+      return 'volume';
+    }
+    if (isReferencedBySegmentation(imageId)) {
+      return 'segmentation';
+    }
+    return null;
   };
 
   const recordLoadedImage = event => {
@@ -142,8 +178,54 @@ export default function initCfndapSeriesCacheInstrumentation(ohif) {
     };
   };
 
+  const getEvictionCandidates = (seriesInstanceUID?: string) => {
+    const candidates: EvictionCandidate[] = [];
+    for (const entry of entriesByImageId.values()) {
+      if (seriesInstanceUID && entry.seriesInstanceUID !== seriesInstanceUID) {
+        continue;
+      }
+      candidates.push({ ...entry, blockedBy: getBlockedBy(entry.imageId) });
+    }
+    return candidates;
+  };
+
+  const evictSeries = (seriesInstanceUID: string, { confirm = false } = {}) => {
+    const candidates = getEvictionCandidates(seriesInstanceUID);
+    const removable = candidates.filter(candidate => candidate.blockedBy === null);
+    const blocked = candidates.filter(candidate => candidate.blockedBy !== null);
+    const knownBytes = removable.reduce((total, candidate) => total + (candidate.bytes || 0), 0);
+
+    if (!confirm) {
+      return {
+        dryRun: true,
+        seriesInstanceUID,
+        removableImageCount: removable.length,
+        blockedImageCount: blocked.length,
+        removableKnownBytes: knownBytes,
+        blockedBy: blocked.reduce<Record<string, number>>((counts, candidate) => {
+          const reason = candidate.blockedBy || 'unknown';
+          counts[reason] = (counts[reason] || 0) + 1;
+          return counts;
+        }, {}),
+        message: 'Review this dry run, then call evictSeries(seriesUID, { confirm: true }).',
+      };
+    }
+
+    removable.forEach(candidate => csCache.removeImageLoadObject(candidate.imageId));
+    return {
+      dryRun: false,
+      seriesInstanceUID,
+      removedImageCount: removable.length,
+      removedKnownBytes: knownBytes,
+      blockedImageCount: blocked.length,
+      cacheBytesAfterRemoval: csCache.getCacheSize(),
+    };
+  };
+
   (window as any).__CFNDAP_OHIF_CACHE_DEBUG__ = {
     getSummary,
+    getEvictionCandidates,
+    evictSeries,
     printSummary() {
       const summary = getSummary();
       console.table(summary.series);
