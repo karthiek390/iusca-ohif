@@ -320,7 +320,7 @@ window.config = {
         supportsReject: false,
         dicomUploadEnabled: false,
         imageRendering: 'wadors',
-        thumbnailRendering: 'wadors',
+        thumbnailRendering: 'rendered',
         enableStudyLazyLoad: true,
         supportsFuzzyMatching: true,
         supportsWildcard: true,
