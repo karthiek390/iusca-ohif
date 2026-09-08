@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 
 import { Thumbnail } from '../Thumbnail';
@@ -12,18 +12,139 @@ const ThumbnailList = ({
   activeDisplaySetInstanceUIDs = [],
   viewPreset,
   ThumbnailMenuItems,
+  virtualize = false,
+  onVisibleThumbnailIdsChange,
 }) => {
   // Use the dynamic height hook on the parent container
   const { ref, maxHeight } = useDynamicMaxHeight(thumbnails);
 
   // Filter thumbnails into list items and thumbnail items
-  const listItems = thumbnails?.filter(
-    ({ componentType }) => componentType === 'thumbnailNoImage' || viewPreset === 'list'
+  const listItems = useMemo(
+    () =>
+      thumbnails?.filter(
+        ({ componentType }) => componentType === 'thumbnailNoImage' || viewPreset === 'list'
+      ) || [],
+    [thumbnails, viewPreset]
   );
 
-  const thumbnailItems = thumbnails?.filter(
-    ({ componentType }) => componentType !== 'thumbnailNoImage' && viewPreset === 'thumbnails'
+  const thumbnailItems = useMemo(
+    () =>
+      thumbnails?.filter(
+        ({ componentType }) => componentType !== 'thumbnailNoImage' && viewPreset === 'thumbnails'
+      ) || [],
+    [thumbnails, viewPreset]
   );
+
+  const virtualListRef = useRef<HTMLDivElement>(null);
+  const [virtualLayout, setVirtualLayout] = useState({
+    columns: 1,
+    startIndex: 0,
+    endIndex: 0,
+  });
+
+  useEffect(() => {
+    if (!virtualize || viewPreset !== 'thumbnails') {
+      onVisibleThumbnailIdsChange?.(thumbnailItems.map(item => item.displaySetInstanceUID));
+      return;
+    }
+
+    const element = virtualListRef.current;
+    if (!element) {
+      return;
+    }
+
+    const itemWidth = 135;
+    const itemHeight = 170;
+    const gap = 4;
+    const overscanRows = 3;
+    const scrollViewport = element.closest('[data-radix-scroll-area-viewport]') as HTMLElement;
+
+    const updateVisibleRange = () => {
+      const width = element.clientWidth;
+      const columns = Math.max(1, Math.floor((width + gap) / (itemWidth + gap)));
+      const elementRect = element.getBoundingClientRect();
+      const viewportRect = scrollViewport?.getBoundingClientRect();
+      const visibleTop = Math.max(0, (viewportRect?.top ?? 0) - elementRect.top);
+      const visibleBottom = Math.min(
+        Math.ceil(thumbnailItems.length / columns) * (itemHeight + gap),
+        (viewportRect?.bottom ?? window.innerHeight) - elementRect.top
+      );
+      const startRow = Math.max(0, Math.floor(visibleTop / (itemHeight + gap)) - overscanRows);
+      const endRow = Math.min(
+        Math.ceil(thumbnailItems.length / columns),
+        Math.ceil(visibleBottom / (itemHeight + gap)) + overscanRows
+      );
+      const startIndex = startRow * columns;
+      const endIndex = Math.min(thumbnailItems.length, endRow * columns);
+
+      setVirtualLayout(previous => {
+        if (
+          previous.columns === columns &&
+          previous.startIndex === startIndex &&
+          previous.endIndex === endIndex
+        ) {
+          return previous;
+        }
+        return { columns, startIndex, endIndex };
+      });
+    };
+
+    const resizeObserver = new ResizeObserver(updateVisibleRange);
+    resizeObserver.observe(element);
+    scrollViewport?.addEventListener('scroll', updateVisibleRange, { passive: true });
+    window.addEventListener('resize', updateVisibleRange);
+    updateVisibleRange();
+
+    return () => {
+      resizeObserver.disconnect();
+      scrollViewport?.removeEventListener('scroll', updateVisibleRange);
+      window.removeEventListener('resize', updateVisibleRange);
+    };
+  }, [virtualize, viewPreset, thumbnailItems, onVisibleThumbnailIdsChange]);
+
+  useEffect(() => {
+    if (!virtualize || viewPreset !== 'thumbnails') {
+      return;
+    }
+
+    onVisibleThumbnailIdsChange?.(
+      thumbnailItems
+        .slice(virtualLayout.startIndex, virtualLayout.endIndex)
+        .map(item => item.displaySetInstanceUID)
+    );
+  }, [
+    virtualize,
+    viewPreset,
+    thumbnailItems,
+    virtualLayout.startIndex,
+    virtualLayout.endIndex,
+    onVisibleThumbnailIdsChange,
+  ]);
+
+  const renderThumbnail = (item, style = undefined) => {
+    const { displaySetInstanceUID, componentType, numInstances, ...rest } = item;
+    const isActive = activeDisplaySetInstanceUIDs.includes(displaySetInstanceUID);
+
+    return (
+      <div
+        key={displaySetInstanceUID}
+        style={style}
+      >
+        <Thumbnail
+          {...rest}
+          displaySetInstanceUID={displaySetInstanceUID}
+          numInstances={numInstances || 1}
+          isActive={isActive}
+          thumbnailType={componentType}
+          viewPreset="thumbnails"
+          onClick={onThumbnailClick.bind(null, displaySetInstanceUID)}
+          onDoubleClick={onThumbnailDoubleClick.bind(null, displaySetInstanceUID)}
+          onClickUntrack={onClickUntrack.bind(null, displaySetInstanceUID)}
+          ThumbnailMenuItems={ThumbnailMenuItems}
+        />
+      </div>
+    );
+  };
 
   return (
     <div className="flex flex-col">
@@ -33,29 +154,35 @@ const ThumbnailList = ({
       >
         {thumbnailItems.length > 0 && (
           <div
+            ref={virtualListRef}
             id="ohif-thumbnail-list"
-            className="bg-bkg-low grid grid-cols-[repeat(auto-fit,_minmax(0,135px))] place-items-start gap-[4px]"
+            className={
+              virtualize
+                ? 'bg-bkg-low relative'
+                : 'bg-bkg-low grid grid-cols-[repeat(auto-fit,_minmax(0,135px))] place-items-start gap-[4px]'
+            }
+            style={
+              virtualize
+                ? {
+                    minHeight: `${Math.ceil(thumbnailItems.length / virtualLayout.columns) * 174}px`,
+                  }
+                : undefined
+            }
           >
-            {thumbnailItems.map(item => {
-              const { displaySetInstanceUID, componentType, numInstances, ...rest } = item;
-
-              const isActive = activeDisplaySetInstanceUIDs.includes(displaySetInstanceUID);
-              return (
-                <Thumbnail
-                  key={displaySetInstanceUID}
-                  {...rest}
-                  displaySetInstanceUID={displaySetInstanceUID}
-                  numInstances={numInstances || 1}
-                  isActive={isActive}
-                  thumbnailType={componentType}
-                  viewPreset="thumbnails"
-                  onClick={onThumbnailClick.bind(null, displaySetInstanceUID)}
-                  onDoubleClick={onThumbnailDoubleClick.bind(null, displaySetInstanceUID)}
-                  onClickUntrack={onClickUntrack.bind(null, displaySetInstanceUID)}
-                  ThumbnailMenuItems={ThumbnailMenuItems}
-                />
-              );
-            })}
+            {virtualize
+              ? thumbnailItems
+                  .slice(virtualLayout.startIndex, virtualLayout.endIndex)
+                  .map((item, offset) => {
+                    const index = virtualLayout.startIndex + offset;
+                    const column = index % virtualLayout.columns;
+                    const row = Math.floor(index / virtualLayout.columns);
+                    return renderThumbnail(item, {
+                      position: 'absolute',
+                      left: `${column * 139}px`,
+                      top: `${row * 174}px`,
+                    });
+                  })
+              : thumbnailItems.map(item => renderThumbnail(item))}
           </div>
         )}
         {/* List Items */}
@@ -121,6 +248,8 @@ ThumbnailList.propTypes = {
   onClickUntrack: PropTypes.func.isRequired,
   viewPreset: PropTypes.string,
   ThumbnailMenuItems: PropTypes.any,
+  virtualize: PropTypes.bool,
+  onVisibleThumbnailIdsChange: PropTypes.func,
 };
 
 export { ThumbnailList };

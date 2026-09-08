@@ -23,6 +23,8 @@ const StudyItem = ({
   ThumbnailMenuItems,
   StudyMenuItems,
   StudyInstanceUID,
+  virtualizeThumbnails,
+  onVisibleThumbnailIdsChange,
 }: withAppTypes) => {
   return (
     <Accordion
@@ -88,6 +90,8 @@ const StudyItem = ({
               onClickUntrack={onClickUntrack}
               viewPreset={viewPreset}
               ThumbnailMenuItems={ThumbnailMenuItems}
+              virtualize={virtualizeThumbnails}
+              onVisibleThumbnailIdsChange={onVisibleThumbnailIdsChange}
             />
           )}
         </AccordionContent>
@@ -112,6 +116,8 @@ StudyItem.propTypes = {
   viewPreset: PropTypes.string,
   StudyMenuItems: PropTypes.func,
   StudyInstanceUID: PropTypes.string,
+  virtualizeThumbnails: PropTypes.bool,
+  onVisibleThumbnailIdsChange: PropTypes.func,
 };
 
 export { StudyItem };

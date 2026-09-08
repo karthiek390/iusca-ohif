@@ -50,12 +50,124 @@ function PanelStudyBrowser({
   const [displaySetsLoadingState, setDisplaySetsLoadingState] = useState({});
   const [thumbnailImageSrcMap, setThumbnailImageSrcMap] = useState({});
   const [jumpToDisplaySet, setJumpToDisplaySet] = useState(null);
+  const [visibleThumbnailDisplaySetInstanceUIDs, setVisibleThumbnailDisplaySetInstanceUIDs] =
+    useState([]);
+  const thumbnailLoadQueueRef = useRef([]);
+  const thumbnailLoadInFlightRef = useRef(0);
+  const thumbnailLoadRequestedRef = useRef(new Set());
+  const thumbnailCacheOrderRef = useRef([]);
+  const visibleThumbnailIdsRef = useRef(new Set());
+
+  const virtualizeThumbnails =
+    typeof window !== 'undefined' &&
+    window.localStorage.getItem('cfndap_ohif_virtual_sidebar') === '1';
+  const virtualizeThumbnailsRef = useRef(virtualizeThumbnails);
+  virtualizeThumbnailsRef.current = virtualizeThumbnails;
 
   const [viewPresets, setViewPresets] = useState(
     customizationService.getCustomization('studyBrowser.viewPresets')
   );
 
   const [actionIcons, setActionIcons] = useState(defaultActionIcons);
+
+  const storeThumbnailImageSrc = useCallback((displaySetInstanceUID, thumbnailSrc) => {
+    const maxThumbnailImageSrcEntries = 96;
+    const order = thumbnailCacheOrderRef.current.filter(id => id !== displaySetInstanceUID);
+    order.push(displaySetInstanceUID);
+
+    setThumbnailImageSrcMap(previous => {
+      const next = { ...previous, [displaySetInstanceUID]: thumbnailSrc };
+      while (order.length > maxThumbnailImageSrcEntries) {
+        delete next[order.shift()];
+      }
+      return next;
+    });
+
+    thumbnailCacheOrderRef.current = order;
+  }, []);
+
+  const loadThumbnail = useCallback(
+    async dSet => {
+      const displaySetInstanceUID = dSet.displaySetInstanceUID;
+      const displaySet = displaySetService.getDisplaySetByUID(displaySetInstanceUID);
+      if (displaySet?.unsupported) {
+        return;
+      }
+
+      const imageIds = dataSource.getImageIdsForDisplaySet(dSet);
+      const imageId = getImageIdForThumbnail(displaySet, imageIds);
+      let { thumbnailSrc } = displaySet;
+
+      if (!thumbnailSrc && displaySet.getThumbnailSrc) {
+        thumbnailSrc = await displaySet.getThumbnailSrc({ getImageSrc });
+      }
+      if (!thumbnailSrc && imageId) {
+        thumbnailSrc = await getImageSrc(imageId);
+        displaySet.thumbnailSrc = thumbnailSrc;
+      }
+
+      if (thumbnailSrc) {
+        if (
+          !virtualizeThumbnailsRef.current ||
+          visibleThumbnailIdsRef.current.has(displaySetInstanceUID)
+        ) {
+          storeThumbnailImageSrc(displaySetInstanceUID, thumbnailSrc);
+        }
+      }
+    },
+    [dataSource, displaySetService, getImageSrc, storeThumbnailImageSrc]
+  );
+
+  const scheduleThumbnailLoad = useCallback(
+    dSet => {
+      const displaySetInstanceUID = dSet.displaySetInstanceUID;
+      if (thumbnailLoadRequestedRef.current.has(displaySetInstanceUID)) {
+        return;
+      }
+
+      thumbnailLoadRequestedRef.current.add(displaySetInstanceUID);
+      thumbnailLoadQueueRef.current.push(dSet);
+
+      const startNext = () => {
+        while (thumbnailLoadInFlightRef.current < 3 && thumbnailLoadQueueRef.current.length) {
+          const queuedDisplaySet = thumbnailLoadQueueRef.current.shift();
+          if (
+            virtualizeThumbnailsRef.current &&
+            !visibleThumbnailIdsRef.current.has(queuedDisplaySet.displaySetInstanceUID)
+          ) {
+            thumbnailLoadRequestedRef.current.delete(queuedDisplaySet.displaySetInstanceUID);
+            continue;
+          }
+          thumbnailLoadInFlightRef.current += 1;
+          loadThumbnail(queuedDisplaySet)
+            .catch(error => {
+              thumbnailLoadRequestedRef.current.delete(queuedDisplaySet.displaySetInstanceUID);
+              console.warn('Unable to load Study Browser thumbnail', error);
+            })
+            .finally(() => {
+              thumbnailLoadInFlightRef.current -= 1;
+              startNext();
+            });
+        }
+      };
+
+      startNext();
+    },
+    [loadThumbnail]
+  );
+
+  const onVisibleThumbnailIdsChange = useCallback(displaySetInstanceUIDs => {
+    visibleThumbnailIdsRef.current = new Set(displaySetInstanceUIDs);
+    setVisibleThumbnailDisplaySetInstanceUIDs(previous => {
+      if (
+        previous.length === displaySetInstanceUIDs.length &&
+        previous.every((id, index) => id === displaySetInstanceUIDs[index])
+      ) {
+        return previous;
+      }
+      return displaySetInstanceUIDs;
+    });
+  }, []);
 
   // multiple can be true or false
   const updateActionIconValue = actionIcon => {
@@ -190,33 +302,20 @@ function PanelStudyBrowser({
       return;
     }
 
-    currentDisplaySets.forEach(async dSet => {
-      const newImageSrcEntry = {};
-      const displaySet = displaySetService.getDisplaySetByUID(dSet.displaySetInstanceUID);
-      const imageIds = dataSource.getImageIdsForDisplaySet(dSet);
-
-      const imageId = getImageIdForThumbnail(displaySet, imageIds);
-
-      // TODO: Is it okay that imageIds are not returned here for SR displaySets?
-      if (displaySet?.unsupported) {
-        return;
-      }
-      // When the image arrives, render it and store the result in the thumbnailImgSrcMap
-      let { thumbnailSrc } = displaySet;
-      if (!thumbnailSrc && displaySet.getThumbnailSrc) {
-        thumbnailSrc = await displaySet.getThumbnailSrc({ getImageSrc });
-      }
-      if (!thumbnailSrc && imageId) {
-        const thumbnailSrc = await getImageSrc(imageId);
-        displaySet.thumbnailSrc = thumbnailSrc;
-      }
-      newImageSrcEntry[dSet.displaySetInstanceUID] = thumbnailSrc;
-
-      setThumbnailImageSrcMap(prevState => {
-        return { ...prevState, ...newImageSrcEntry };
-      });
-    });
-  }, [displaySetService, dataSource, getImageSrc, activeViewportId, hasLoadedViewports]);
+    const visibleThumbnailIds = new Set(visibleThumbnailDisplaySetInstanceUIDs);
+    currentDisplaySets
+      .filter(
+        dSet => !virtualizeThumbnails || visibleThumbnailIds.has(dSet.displaySetInstanceUID)
+      )
+      .forEach(scheduleThumbnailLoad);
+  }, [
+    displaySetService,
+    activeViewportId,
+    hasLoadedViewports,
+    scheduleThumbnailLoad,
+    visibleThumbnailDisplaySetInstanceUIDs,
+    virtualizeThumbnails,
+  ]);
 
   // ~~ displaySets
   useEffect(() => {
@@ -256,9 +355,8 @@ function PanelStudyBrowser({
           return;
         }
         const { displaySetsAdded, options } = data;
-        displaySetsAdded.forEach(async dSet => {
+        displaySetsAdded.forEach(dSet => {
           const displaySetInstanceUID = dSet.displaySetInstanceUID;
-          const newImageSrcEntry = {};
           const displaySet = displaySetService.getDisplaySetByUID(displaySetInstanceUID);
           if (displaySet?.unsupported) {
             return;
@@ -267,28 +365,12 @@ function PanelStudyBrowser({
             setJumpToDisplaySet(displaySetInstanceUID);
           }
 
-          const imageIds = dataSource.getImageIdsForDisplaySet(displaySet);
-          const imageId = getImageIdForThumbnail(displaySet, imageIds);
-
-          // TODO: Is it okay that imageIds are not returned here for SR displaysets?
-          if (!imageId) {
-            return;
+          if (
+            !virtualizeThumbnails ||
+            visibleThumbnailDisplaySetInstanceUIDs.includes(displaySetInstanceUID)
+          ) {
+            scheduleThumbnailLoad(dSet);
           }
-
-          // When the image arrives, render it and store the result in the thumbnailImgSrcMap
-          let { thumbnailSrc } = displaySet;
-          if (!thumbnailSrc && displaySet.getThumbnailSrc) {
-            thumbnailSrc = await displaySet.getThumbnailSrc({ getImageSrc });
-          }
-          if (!thumbnailSrc) {
-            thumbnailSrc = await getImageSrc(imageId);
-            displaySet.thumbnailSrc = thumbnailSrc;
-          }
-          newImageSrcEntry[displaySetInstanceUID] = thumbnailSrc;
-
-          setThumbnailImageSrcMap(prevState => {
-            return { ...prevState, ...newImageSrcEntry };
-          });
         });
       }
     );
@@ -296,7 +378,13 @@ function PanelStudyBrowser({
     return () => {
       SubscriptionDisplaySetsAdded.unsubscribe();
     };
-  }, [displaySetService, dataSource, getImageSrc, hasLoadedViewports]);
+  }, [
+    displaySetService,
+    hasLoadedViewports,
+    scheduleThumbnailLoad,
+    visibleThumbnailDisplaySetInstanceUIDs,
+    virtualizeThumbnails,
+  ]);
 
   useEffect(() => {
     // TODO: Will this always hold _all_ the displaySets we care about?
@@ -448,6 +536,8 @@ function PanelStudyBrowser({
           servicesManager,
           menuItemsKey: 'studyBrowser.studyMenuItems',
         })}
+        virtualizeThumbnails={virtualizeThumbnails}
+        onVisibleThumbnailIdsChange={onVisibleThumbnailIdsChange}
       />
     </>
   );

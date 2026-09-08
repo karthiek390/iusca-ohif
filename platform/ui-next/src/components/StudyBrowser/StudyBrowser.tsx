@@ -23,6 +23,8 @@ const StudyBrowser = ({
   viewPresets,
   ThumbnailMenuItems,
   StudyMenuItems,
+  virtualizeThumbnails = false,
+  onVisibleThumbnailIdsChange,
 }: withAppTypes) => {
   const getTabContent = () => {
     const tabData = tabs.find(tab => tab.name === activeTabName);
@@ -52,6 +54,8 @@ const StudyBrowser = ({
               ThumbnailMenuItems={ThumbnailMenuItems}
               StudyMenuItems={StudyMenuItems}
               StudyInstanceUID={studyInstanceUid}
+              virtualizeThumbnails={virtualizeThumbnails}
+              onVisibleThumbnailIdsChange={onVisibleThumbnailIdsChange}
             />
           </React.Fragment>
         );
@@ -135,6 +139,8 @@ StudyBrowser.propTypes = {
     })
   ),
   StudyMenuItems: PropTypes.func,
+  virtualizeThumbnails: PropTypes.bool,
+  onVisibleThumbnailIdsChange: PropTypes.func,
 };
 
 export { StudyBrowser };
