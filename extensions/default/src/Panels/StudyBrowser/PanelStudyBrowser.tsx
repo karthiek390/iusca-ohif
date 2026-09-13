@@ -49,6 +49,7 @@ function PanelStudyBrowser({
   const [displaySets, setDisplaySets] = useState([]);
   const [displaySetsLoadingState, setDisplaySetsLoadingState] = useState({});
   const [thumbnailImageSrcMap, setThumbnailImageSrcMap] = useState({});
+  const [lazyCatalogDisplaySets, setLazyCatalogDisplaySets] = useState([]);
   const [jumpToDisplaySet, setJumpToDisplaySet] = useState(null);
   const [visibleThumbnailDisplaySetInstanceUIDs, setVisibleThumbnailDisplaySetInstanceUIDs] =
     useState([]);
@@ -64,11 +65,74 @@ function PanelStudyBrowser({
   const virtualizeThumbnailsRef = useRef(virtualizeThumbnails);
   virtualizeThumbnailsRef.current = virtualizeThumbnails;
 
+  const lazySeriesMetadataEnabled =
+    typeof window !== 'undefined' &&
+    window.localStorage.getItem('cfndap_ohif_lazy_series_metadata') === '1';
+
   const [viewPresets, setViewPresets] = useState(
     customizationService.getCustomization('studyBrowser.viewPresets')
   );
 
   const [actionIcons, setActionIcons] = useState(defaultActionIcons);
+
+  const refreshLazyCatalog = useCallback(() => {
+    const lazyMetadataApi = (window as any).__CFNDAP_OHIF_LAZY_SERIES_METADATA__;
+    if (!lazySeriesMetadataEnabled || !lazyMetadataApi?.enabled?.()) {
+      setLazyCatalogDisplaySets([]);
+      return;
+    }
+
+    setLazyCatalogDisplaySets(
+      lazyMetadataApi.getCatalog().filter(series => !series.hydrated).map(series => ({
+        displaySetInstanceUID: `cfndap-lazy:${series.seriesInstanceUID}`,
+        SeriesInstanceUID: series.seriesInstanceUID,
+        StudyInstanceUID: series.studyInstanceUID,
+        SeriesNumber: series.seriesNumber,
+        SeriesDescription: series.seriesDescription || '',
+        Modality: series.modality,
+        description: series.seriesDescription || '',
+        seriesNumber: series.seriesNumber,
+        modality: series.modality,
+        componentType: 'thumbnail',
+        numInstances: 0,
+        isLazyMetadataPlaceholder: true,
+      }))
+    );
+  }, [lazySeriesMetadataEnabled]);
+
+  const mergeLazyCatalogDisplaySets = useCallback(
+    mappedDisplaySets => {
+      if (!lazySeriesMetadataEnabled) {
+        return mappedDisplaySets;
+      }
+
+      const hydratedSeriesUIDs = new Set(
+        mappedDisplaySets.map(displaySet => displaySet.SeriesInstanceUID)
+      );
+      return [
+        ...mappedDisplaySets,
+        ...lazyCatalogDisplaySets.filter(
+          displaySet => !hydratedSeriesUIDs.has(displaySet.SeriesInstanceUID)
+        ),
+      ];
+    },
+    [lazyCatalogDisplaySets, lazySeriesMetadataEnabled]
+  );
+
+  useEffect(() => {
+    if (!lazySeriesMetadataEnabled) {
+      return;
+    }
+
+    window.addEventListener('cfndap:series-metadata-catalog-ready', refreshLazyCatalog);
+    window.addEventListener('cfndap:series-metadata-hydrated', refreshLazyCatalog);
+    refreshLazyCatalog();
+
+    return () => {
+      window.removeEventListener('cfndap:series-metadata-catalog-ready', refreshLazyCatalog);
+      window.removeEventListener('cfndap:series-metadata-hydrated', refreshLazyCatalog);
+    };
+  }, [lazySeriesMetadataEnabled, refreshLazyCatalog]);
 
   const storeThumbnailImageSrc = useCallback((displaySetInstanceUID, thumbnailSrc) => {
     const maxThumbnailImageSrcEntries = 96;
@@ -88,6 +152,9 @@ function PanelStudyBrowser({
 
   const loadThumbnail = useCallback(
     async dSet => {
+      if (dSet.isLazyMetadataPlaceholder) {
+        return;
+      }
       const displaySetInstanceUID = dSet.displaySetInstanceUID;
       const displaySet = displaySetService.getDisplaySetByUID(displaySetInstanceUID);
       if (displaySet?.unsupported) {
@@ -190,7 +257,7 @@ function PanelStudyBrowser({
 
   const mapDisplaySetsWithState = customMapDisplaySets || _mapDisplaySets;
 
-  const onDoubleClickThumbnailHandler = useCallback(
+  const runDoubleClickThumbnailHandler = useCallback(
     async displaySetInstanceUID => {
       const customHandler = customizationService.getCustomization(
         'studyBrowser.thumbnailDoubleClickCallback'
@@ -219,6 +286,34 @@ function PanelStudyBrowser({
       customizationService,
     ]
   );
+
+  const onDoubleClickThumbnailHandler = useCallback(
+    async displaySetInstanceUID => {
+      if (!displaySetInstanceUID.startsWith('cfndap-lazy:')) {
+        return runDoubleClickThumbnailHandler(displaySetInstanceUID);
+      }
+
+      const seriesInstanceUID = displaySetInstanceUID.replace('cfndap-lazy:', '');
+      await (window as any).__CFNDAP_OHIF_LAZY_SERIES_METADATA__?.hydrateSeries(seriesInstanceUID);
+
+      const hydratedDisplaySet = displaySetService
+        .getActiveDisplaySets()
+        .find(displaySet => displaySet.SeriesInstanceUID === seriesInstanceUID);
+      if (hydratedDisplaySet) {
+        await runDoubleClickThumbnailHandler(hydratedDisplaySet.displaySetInstanceUID);
+      }
+    },
+    [displaySetService, runDoubleClickThumbnailHandler]
+  );
+
+  const onClickThumbnailHandler = useCallback(async displaySetInstanceUID => {
+    if (!displaySetInstanceUID.startsWith('cfndap-lazy:')) {
+      return;
+    }
+
+    const seriesInstanceUID = displaySetInstanceUID.replace('cfndap-lazy:', '');
+    await (window as any).__CFNDAP_OHIF_LAZY_SERIES_METADATA__?.hydrateSeries(seriesInstanceUID);
+  }, []);
 
   // ~~ studyDisplayList
   useEffect(() => {
@@ -336,13 +431,14 @@ function PanelStudyBrowser({
       sortStudyInstances(mappedDisplaySets);
     }
 
-    setDisplaySets(mappedDisplaySets);
+    setDisplaySets(mergeLazyCatalogDisplaySets(mappedDisplaySets));
   }, [
     displaySetService.activeDisplaySets,
     displaySetsLoadingState,
     viewports,
     thumbnailImageSrcMap,
     customMapDisplaySets,
+    mergeLazyCatalogDisplaySets,
   ]);
 
   // ~~ subscriptions --> displaySets
@@ -403,7 +499,7 @@ function PanelStudyBrowser({
           sortStudyInstances(mappedDisplaySets);
         }
 
-        setDisplaySets(mappedDisplaySets);
+        setDisplaySets(mergeLazyCatalogDisplaySets(mappedDisplaySets));
       }
     );
 
@@ -421,7 +517,7 @@ function PanelStudyBrowser({
           sortStudyInstances(mappedDisplaySets);
         }
 
-        setDisplaySets(mappedDisplaySets);
+        setDisplaySets(mergeLazyCatalogDisplaySets(mappedDisplaySets));
       }
     );
 
@@ -435,6 +531,7 @@ function PanelStudyBrowser({
     viewports,
     displaySetService,
     customMapDisplaySets,
+    mergeLazyCatalogDisplaySets,
   ]);
 
   const tabs = createStudyBrowserTabs(StudyInstanceUIDs, studyDisplayList, displaySets);
@@ -521,7 +618,7 @@ function PanelStudyBrowser({
           setActiveTabName(clickedTabName);
         }}
         onClickUntrack={onClickUntrack}
-        onClickThumbnail={() => {}}
+        onClickThumbnail={onClickThumbnailHandler}
         onDoubleClickThumbnail={onDoubleClickThumbnailHandler}
         activeDisplaySetInstanceUIDs={activeDisplaySetInstanceUIDs}
         showSettings={actionIcons.find(icon => icon.id === 'settings')?.value}

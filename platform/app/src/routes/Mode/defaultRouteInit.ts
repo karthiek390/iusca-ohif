@@ -4,6 +4,83 @@ import isSeriesFilterUsed from '../../utils/isSeriesFilterUsed';
 
 const { seriesSortCriteria, getSplitParam } = utils;
 
+const lazySeriesMetadataFlag = 'cfndap_ohif_lazy_series_metadata';
+
+function isLazySeriesMetadataEnabled() {
+  return (
+    typeof window !== 'undefined' &&
+    window.localStorage.getItem(lazySeriesMetadataFlag) === '1'
+  );
+}
+
+function installLazySeriesMetadataRegistry() {
+  if (!isLazySeriesMetadataEnabled()) {
+    return null;
+  }
+
+  const seriesByUID = new Map();
+  const hydratedSeriesUIDs = new Set();
+
+  const hydrateSeries = async seriesInstanceUID => {
+    const entry = seriesByUID.get(seriesInstanceUID);
+    if (!entry) {
+      throw new Error(`No deferred metadata request is registered for series ${seriesInstanceUID}`);
+    }
+
+    const instances = await entry.promise.start();
+    hydratedSeriesUIDs.add(seriesInstanceUID);
+    window.dispatchEvent(
+      new CustomEvent('cfndap:series-metadata-hydrated', {
+        detail: {
+          studyInstanceUID: entry.studyInstanceUID,
+          seriesInstanceUID,
+          instanceCount: instances?.length || 0,
+        },
+      })
+    );
+    return instances;
+  };
+
+  const api = {
+    enabled: () => true,
+    getCatalog: () =>
+      Array.from(seriesByUID.values()).map(({ studyInstanceUID, promise }) => ({
+        studyInstanceUID,
+        seriesInstanceUID: promise.metadata?.SeriesInstanceUID,
+        seriesNumber: promise.metadata?.SeriesNumber,
+        seriesDescription: promise.metadata?.SeriesDescription,
+        modality: promise.metadata?.Modality,
+        hydrated: hydratedSeriesUIDs.has(promise.metadata?.SeriesInstanceUID),
+      })),
+    hydrateSeries,
+    getSummary: () => ({
+      catalogSeriesCount: seriesByUID.size,
+      hydratedSeriesCount: hydratedSeriesUIDs.size,
+      pendingSeriesCount: seriesByUID.size - hydratedSeriesUIDs.size,
+    }),
+  };
+
+  (window as any).__CFNDAP_OHIF_LAZY_SERIES_METADATA__ = api;
+
+  return {
+    register(studyInstanceUID, promises) {
+      promises.forEach(promise => {
+        const seriesInstanceUID = promise.metadata?.SeriesInstanceUID;
+        if (seriesInstanceUID) {
+          seriesByUID.set(seriesInstanceUID, { studyInstanceUID, promise });
+        }
+      });
+      window.dispatchEvent(new CustomEvent('cfndap:series-metadata-catalog-ready'));
+    },
+    markHydrated(promise) {
+      const seriesInstanceUID = promise.metadata?.SeriesInstanceUID;
+      if (seriesInstanceUID) {
+        hydratedSeriesUIDs.add(seriesInstanceUID);
+      }
+    },
+  };
+}
+
 function installCfndapRuntimeInstrumentation({ servicesManager, primaryStudyUID }) {
   const debugApi = (window as any).__CFNDAP_OHIF_DEBUG__;
   if (!debugApi?.enabled?.()) {
@@ -73,6 +150,7 @@ export async function defaultRouteInit(
 ) {
   const { displaySetService, hangingProtocolService, uiNotificationService, customizationService } =
     servicesManager.services;
+  const lazySeriesMetadataRegistry = installLazySeriesMetadataRegistry();
   /**
    * Function to apply the hanging protocol when the minimum number of display sets were
    * received or all display sets retrieval were completed
@@ -182,27 +260,39 @@ export async function defaultRouteInit(
     const allPromises = [];
     const remainingPromises = [];
 
+    const startSeriesPromise = promise =>
+      Promise.resolve(promise.start()).then(result => {
+        lazySeriesMetadataRegistry?.markHydrated(promise);
+        return result;
+      });
+
     function startRemainingPromises(remainingPromises) {
+      if (lazySeriesMetadataRegistry) {
+        return;
+      }
       remainingPromises.forEach(p => p.forEach(p => p.start()));
     }
 
-    promises.forEach(promise => {
+    promises.forEach((promise, index) => {
       const retrieveSeriesMetadataPromise = promise.value;
       if (!Array.isArray(retrieveSeriesMetadataPromise)) {
         return;
       }
 
+      lazySeriesMetadataRegistry?.register(
+        studyInstanceUIDs[index],
+        retrieveSeriesMetadataPromise
+      );
+
       if (displaySetFromUrl) {
-        const requiredSeriesPromises = retrieveSeriesMetadataPromise.map(promise =>
-          promise.start()
-        );
+        const requiredSeriesPromises = retrieveSeriesMetadataPromise.map(startSeriesPromise);
         allPromises.push(Promise.allSettled(requiredSeriesPromises));
       } else {
         const { requiredSeries, remaining } = hangingProtocolService.filterSeriesRequiredForRun(
           hangingProtocolId,
           retrieveSeriesMetadataPromise
         );
-        const requiredSeriesPromises = requiredSeries.map(promise => promise.start());
+        const requiredSeriesPromises = requiredSeries.map(startSeriesPromise);
         allPromises.push(Promise.allSettled(requiredSeriesPromises));
         remainingPromises.push(remaining);
       }

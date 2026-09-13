@@ -55,8 +55,9 @@ export function createStudyBrowserTabs(
       ? seriesSortCriteria.compareSeriesUID
       : (customizationService.getCustomization('sortingCriteria') as (a, b) => number);
     const sortedDisplaySets = displaySetsForStudy.sort((a, b) => {
-      const displaySetA = displaySetService.getDisplaySetByUID(a.displaySetInstanceUID);
-      const displaySetB = displaySetService.getDisplaySetByUID(b.displaySetInstanceUID);
+      // Lazy catalog cards do not have a full DisplaySet until their series is selected.
+      const displaySetA = displaySetService.getDisplaySetByUID(a.displaySetInstanceUID) || a;
+      const displaySetB = displaySetService.getDisplaySetByUID(b.displaySetInstanceUID) || b;
       return sortCriteria(displaySetA, displaySetB);
     });
 
