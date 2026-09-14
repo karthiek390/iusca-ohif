@@ -5,12 +5,21 @@ import isSeriesFilterUsed from '../../utils/isSeriesFilterUsed';
 const { seriesSortCriteria, getSplitParam } = utils;
 
 const lazySeriesMetadataFlag = 'cfndap_ohif_lazy_series_metadata';
+const lazySeriesInitialLimitFlag = 'cfndap_ohif_lazy_series_initial_limit';
 
 function isLazySeriesMetadataEnabled() {
   return (
     typeof window !== 'undefined' &&
     window.localStorage.getItem(lazySeriesMetadataFlag) === '1'
   );
+}
+
+function getLazySeriesInitialLimit() {
+  const configuredLimit = Number.parseInt(
+    window.localStorage.getItem(lazySeriesInitialLimitFlag) || '1',
+    10
+  );
+  return Number.isSafeInteger(configuredLimit) && configuredLimit > 0 ? configuredLimit : 1;
 }
 
 function installLazySeriesMetadataRegistry() {
@@ -20,6 +29,27 @@ function installLazySeriesMetadataRegistry() {
 
   const seriesByUID = new Map();
   const hydratedSeriesUIDs = new Set();
+  const hydratingSeriesUIDs = new Set();
+  const hydrationPromises = new Map();
+
+  const dispatchCatalogChange = eventName => {
+    window.dispatchEvent(new CustomEvent(eventName));
+  };
+
+  const markHydrated = promise => {
+    const seriesInstanceUID = promise.metadata?.SeriesInstanceUID;
+    if (seriesInstanceUID && !hydratedSeriesUIDs.has(seriesInstanceUID)) {
+      hydratedSeriesUIDs.add(seriesInstanceUID);
+      hydratingSeriesUIDs.delete(seriesInstanceUID);
+      window.dispatchEvent(
+        new CustomEvent('cfndap:series-metadata-hydrated', {
+          detail: {
+            seriesInstanceUID,
+          },
+        })
+      );
+    }
+  };
 
   const hydrateSeries = async seriesInstanceUID => {
     const entry = seriesByUID.get(seriesInstanceUID);
@@ -27,18 +57,30 @@ function installLazySeriesMetadataRegistry() {
       throw new Error(`No deferred metadata request is registered for series ${seriesInstanceUID}`);
     }
 
-    const instances = await entry.promise.start();
-    hydratedSeriesUIDs.add(seriesInstanceUID);
-    window.dispatchEvent(
-      new CustomEvent('cfndap:series-metadata-hydrated', {
-        detail: {
-          studyInstanceUID: entry.studyInstanceUID,
-          seriesInstanceUID,
-          instanceCount: instances?.length || 0,
-        },
+    if (hydratedSeriesUIDs.has(seriesInstanceUID)) {
+      return entry.promise.start();
+    }
+
+    if (hydrationPromises.has(seriesInstanceUID)) {
+      return hydrationPromises.get(seriesInstanceUID);
+    }
+
+    hydratingSeriesUIDs.add(seriesInstanceUID);
+    dispatchCatalogChange('cfndap:series-metadata-hydration-started');
+
+    const hydrationPromise = Promise.resolve(entry.promise.start())
+      .then(instances => {
+        markHydrated(entry.promise);
+        return instances;
       })
-    );
-    return instances;
+      .catch(error => {
+        hydratingSeriesUIDs.delete(seriesInstanceUID);
+        dispatchCatalogChange('cfndap:series-metadata-hydration-failed');
+        throw error;
+      });
+
+    hydrationPromises.set(seriesInstanceUID, hydrationPromise);
+    return hydrationPromise;
   };
 
   const api = {
@@ -50,7 +92,9 @@ function installLazySeriesMetadataRegistry() {
         seriesNumber: promise.metadata?.SeriesNumber,
         seriesDescription: promise.metadata?.SeriesDescription,
         modality: promise.metadata?.Modality,
+        instanceCount: promise.metadata?.NumberOfSeriesRelatedInstances,
         hydrated: hydratedSeriesUIDs.has(promise.metadata?.SeriesInstanceUID),
+        hydrating: hydratingSeriesUIDs.has(promise.metadata?.SeriesInstanceUID),
       })),
     hydrateSeries,
     getSummary: () => ({
@@ -70,14 +114,10 @@ function installLazySeriesMetadataRegistry() {
           seriesByUID.set(seriesInstanceUID, { studyInstanceUID, promise });
         }
       });
-      window.dispatchEvent(new CustomEvent('cfndap:series-metadata-catalog-ready'));
+      dispatchCatalogChange('cfndap:series-metadata-catalog-ready');
     },
-    markHydrated(promise) {
-      const seriesInstanceUID = promise.metadata?.SeriesInstanceUID;
-      if (seriesInstanceUID) {
-        hydratedSeriesUIDs.add(seriesInstanceUID);
-      }
-    },
+    markHydrated,
+    hydrateSeries,
   };
 }
 
@@ -88,6 +128,7 @@ function installCfndapRuntimeInstrumentation({ servicesManager, primaryStudyUID 
   }
 
   const { displaySetService, cornerstoneCacheService } = servicesManager.services;
+
   let timer;
   const report = label => {
     const displaySets = displaySetService?.getActiveDisplaySets?.() || [];
@@ -260,11 +301,14 @@ export async function defaultRouteInit(
     const allPromises = [];
     const remainingPromises = [];
 
-    const startSeriesPromise = promise =>
-      Promise.resolve(promise.start()).then(result => {
-        lazySeriesMetadataRegistry?.markHydrated(promise);
-        return result;
-      });
+    const startSeriesPromise = promise => {
+      const seriesInstanceUID = promise.metadata?.SeriesInstanceUID;
+      if (lazySeriesMetadataRegistry && seriesInstanceUID) {
+        return lazySeriesMetadataRegistry.hydrateSeries(seriesInstanceUID);
+      }
+
+      return promise.start();
+    };
 
     function startRemainingPromises(remainingPromises) {
       if (lazySeriesMetadataRegistry) {
@@ -292,9 +336,17 @@ export async function defaultRouteInit(
           hangingProtocolId,
           retrieveSeriesMetadataPromise
         );
-        const requiredSeriesPromises = requiredSeries.map(startSeriesPromise);
+        // The opt-in stack experiment limits broad hanging-protocol requirements
+        // so that only the initial viewport series is hydrated at route startup.
+        const initialSeries = lazySeriesMetadataRegistry
+          ? requiredSeries.slice(0, getLazySeriesInitialLimit())
+          : requiredSeries;
+        const deferredRequiredSeries = lazySeriesMetadataRegistry
+          ? requiredSeries.slice(initialSeries.length)
+          : [];
+        const requiredSeriesPromises = initialSeries.map(startSeriesPromise);
         allPromises.push(Promise.allSettled(requiredSeriesPromises));
-        remainingPromises.push(remaining);
+        remainingPromises.push([...deferredRequiredSeries, ...remaining]);
       }
     });
 

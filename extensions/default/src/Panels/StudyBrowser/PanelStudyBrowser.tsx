@@ -83,7 +83,7 @@ function PanelStudyBrowser({
     }
 
     setLazyCatalogDisplaySets(
-      lazyMetadataApi.getCatalog().filter(series => !series.hydrated).map(series => ({
+      lazyMetadataApi.getCatalog().map(series => ({
         displaySetInstanceUID: `cfndap-lazy:${series.seriesInstanceUID}`,
         SeriesInstanceUID: series.seriesInstanceUID,
         StudyInstanceUID: series.studyInstanceUID,
@@ -94,8 +94,9 @@ function PanelStudyBrowser({
         seriesNumber: series.seriesNumber,
         modality: series.modality,
         componentType: 'thumbnail',
-        numInstances: 0,
+        numInstances: Number(series.instanceCount) || 0,
         isLazyMetadataPlaceholder: true,
+        isLazyMetadataLoading: series.hydrating,
       }))
     );
   }, [lazySeriesMetadataEnabled]);
@@ -125,12 +126,16 @@ function PanelStudyBrowser({
     }
 
     window.addEventListener('cfndap:series-metadata-catalog-ready', refreshLazyCatalog);
+    window.addEventListener('cfndap:series-metadata-hydration-started', refreshLazyCatalog);
     window.addEventListener('cfndap:series-metadata-hydrated', refreshLazyCatalog);
+    window.addEventListener('cfndap:series-metadata-hydration-failed', refreshLazyCatalog);
     refreshLazyCatalog();
 
     return () => {
       window.removeEventListener('cfndap:series-metadata-catalog-ready', refreshLazyCatalog);
+      window.removeEventListener('cfndap:series-metadata-hydration-started', refreshLazyCatalog);
       window.removeEventListener('cfndap:series-metadata-hydrated', refreshLazyCatalog);
+      window.removeEventListener('cfndap:series-metadata-hydration-failed', refreshLazyCatalog);
     };
   }, [lazySeriesMetadataEnabled, refreshLazyCatalog]);
 
@@ -697,6 +702,8 @@ function _mapDisplaySets(displaySets, displaySetLoadingState, thumbnailImageSrcM
           // .. Any other data to pass
         },
         isHydratedForDerivedDisplaySet: ds.isHydrated,
+        isLazyMetadataPlaceholder: ds.isLazyMetadataPlaceholder,
+        isLazyMetadataLoading: ds.isLazyMetadataLoading,
       });
     });
 

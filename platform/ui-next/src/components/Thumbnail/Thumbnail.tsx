@@ -26,6 +26,8 @@ const Thumbnail = ({
   thumbnailType,
   modality,
   viewPreset = 'thumbnails',
+  isLazyMetadataPlaceholder = false,
+  isLazyMetadataLoading = false,
   isHydratedForDerivedDisplaySet = false,
   isTracked = false,
   canReject = false,
@@ -75,6 +77,10 @@ const Thumbnail = ({
                 className="h-[114px] w-[128px] rounded object-contain"
                 crossOrigin="anonymous"
               />
+            ) : isLazyMetadataPlaceholder ? (
+              <div className="bg-background flex h-[114px] w-[128px] items-center justify-center rounded p-3 text-center text-[11px] text-muted-foreground">
+                {isLazyMetadataLoading ? 'Loading series...' : 'Click to load series'}
+              </div>
             ) : (
               <div className="bg-background h-[114px] w-[128px] rounded"></div>
             )}
@@ -323,6 +329,8 @@ Thumbnail.propTypes = {
   viewPreset: PropTypes.string,
   modality: PropTypes.string,
   isHydratedForDerivedDisplaySet: PropTypes.bool,
+  isLazyMetadataPlaceholder: PropTypes.bool,
+  isLazyMetadataLoading: PropTypes.bool,
   isTracked: PropTypes.bool,
   onClickUntrack: PropTypes.func,
   countIcon: PropTypes.string,

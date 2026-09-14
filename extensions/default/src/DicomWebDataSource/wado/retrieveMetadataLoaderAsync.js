@@ -2,9 +2,9 @@ import dcmjs from 'dcmjs';
 import { sortStudySeries } from '@ohif/core/src/utils/sortStudy';
 import RetrieveMetadataLoader from './retrieveMetadataLoader';
 
-// Series Date, Series Time, Series Description and Series Number to be included
-// in the series metadata query result
-const includeField = ['00080021', '00080031', '0008103E', '00200011'].join(',');
+// Keep the catalog fields needed to label a deferred series without retrieving
+// its full instance metadata.
+const includeField = ['00080021', '00080031', '0008103E', '00200011', '00201209'].join(',');
 
 export class DeferredPromise {
   metadata = undefined;
