@@ -85,6 +85,12 @@ const Thumbnail = ({
               <div className="bg-background h-[114px] w-[128px] rounded"></div>
             )}
 
+            {isLazyMetadataPlaceholder && imageSrc && (
+              <div className="bg-background/80 absolute top-0 left-0 rounded-br px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                {isLazyMetadataLoading ? 'Loading series...' : 'Preview - click to load'}
+              </div>
+            )}
+
             {/* bottom left */}
             <div className="absolute bottom-0 left-0 flex h-[14px] items-center gap-[4px] rounded-tr pt-[10px] pb-[10px] pr-[6px] pl-[5px]">
               <div

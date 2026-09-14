@@ -387,6 +387,39 @@ function createDicomWebApi(dicomWebConfig: DicomWebConfig, servicesManager) {
             madeInClient
           );
         },
+        thumbnail: async ({ StudyInstanceUID, SeriesInstanceUID, instanceCount = 1 } = {}) => {
+          if (!StudyInstanceUID || !SeriesInstanceUID) {
+            throw new Error('Unable to retrieve a series thumbnail without study and series UIDs');
+          }
+
+          qidoDicomWebClient.headers = getAuthorizationHeader();
+          const offset = Math.max(0, Math.floor(Number(instanceCount || 1) / 2));
+          const instances = await qidoDicomWebClient.searchForInstances({
+            studyInstanceUID: StudyInstanceUID,
+            seriesInstanceUID: SeriesInstanceUID,
+            queryParams: {
+              limit: 1,
+              offset,
+              includefield: '00080018',
+            },
+          });
+          const SOPInstanceUID = instances?.[0]?.['00080018']?.Value?.[0];
+
+          if (!SOPInstanceUID) {
+            return null;
+          }
+
+          const BulkDataURI = `${dicomWebConfig.wadoRoot}/studies/${StudyInstanceUID}/series/${SeriesInstanceUID}/instances/${SOPInstanceUID}/rendered?accept=image/jpeg`;
+          const renderedImage = await qidoDicomWebClient.retrieveBulkData({
+            multipart: false,
+            BulkDataURI,
+            StudyInstanceUID,
+          });
+
+          return URL.createObjectURL(
+            new Blob([renderedImage?.[0]], { type: 'image/jpeg' })
+          );
+        },
       },
     },
 

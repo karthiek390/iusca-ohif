@@ -83,23 +83,27 @@ function PanelStudyBrowser({
     }
 
     setLazyCatalogDisplaySets(
-      lazyMetadataApi.getCatalog().map(series => ({
-        displaySetInstanceUID: `cfndap-lazy:${series.seriesInstanceUID}`,
-        SeriesInstanceUID: series.seriesInstanceUID,
-        StudyInstanceUID: series.studyInstanceUID,
-        SeriesNumber: series.seriesNumber,
-        SeriesDescription: series.seriesDescription || '',
-        Modality: series.modality,
-        description: series.seriesDescription || '',
-        seriesNumber: series.seriesNumber,
-        modality: series.modality,
-        componentType: 'thumbnail',
-        numInstances: Number(series.instanceCount) || 0,
-        isLazyMetadataPlaceholder: true,
-        isLazyMetadataLoading: series.hydrating,
-      }))
+      lazyMetadataApi.getCatalog().map(series => {
+        const displaySetInstanceUID = `cfndap-lazy:${series.seriesInstanceUID}`;
+        return {
+          displaySetInstanceUID,
+          SeriesInstanceUID: series.seriesInstanceUID,
+          StudyInstanceUID: series.studyInstanceUID,
+          SeriesNumber: series.seriesNumber,
+          SeriesDescription: series.seriesDescription || '',
+          Modality: series.modality,
+          description: series.seriesDescription || '',
+          seriesNumber: series.seriesNumber,
+          modality: series.modality,
+          componentType: 'thumbnail',
+          numInstances: Number(series.instanceCount) || 0,
+          imageSrc: thumbnailImageSrcMap[displaySetInstanceUID],
+          isLazyMetadataPlaceholder: true,
+          isLazyMetadataLoading: series.hydrating,
+        };
+      })
     );
-  }, [lazySeriesMetadataEnabled]);
+  }, [lazySeriesMetadataEnabled, thumbnailImageSrcMap]);
 
   const mergeLazyCatalogDisplaySets = useCallback(
     mappedDisplaySets => {
@@ -158,6 +162,20 @@ function PanelStudyBrowser({
   const loadThumbnail = useCallback(
     async dSet => {
       if (dSet.isLazyMetadataPlaceholder) {
+        const displaySetInstanceUID = dSet.displaySetInstanceUID;
+        const thumbnailSrc = await dataSource.retrieve.series.thumbnail({
+          StudyInstanceUID: dSet.StudyInstanceUID,
+          SeriesInstanceUID: dSet.SeriesInstanceUID,
+          instanceCount: dSet.numInstances,
+        });
+
+        if (
+          thumbnailSrc &&
+          (!virtualizeThumbnailsRef.current ||
+            visibleThumbnailIdsRef.current.has(displaySetInstanceUID))
+        ) {
+          storeThumbnailImageSrc(displaySetInstanceUID, thumbnailSrc);
+        }
         return;
       }
       const displaySetInstanceUID = dSet.displaySetInstanceUID;
@@ -228,18 +246,26 @@ function PanelStudyBrowser({
     [loadThumbnail]
   );
 
-  const onVisibleThumbnailIdsChange = useCallback(displaySetInstanceUIDs => {
-    visibleThumbnailIdsRef.current = new Set(displaySetInstanceUIDs);
-    setVisibleThumbnailDisplaySetInstanceUIDs(previous => {
-      if (
-        previous.length === displaySetInstanceUIDs.length &&
-        previous.every((id, index) => id === displaySetInstanceUIDs[index])
-      ) {
-        return previous;
-      }
-      return displaySetInstanceUIDs;
-    });
-  }, []);
+  const onVisibleThumbnailIdsChange = useCallback(
+    displaySetInstanceUIDs => {
+      visibleThumbnailIdsRef.current = new Set(displaySetInstanceUIDs);
+      setVisibleThumbnailDisplaySetInstanceUIDs(previous => {
+        if (
+          previous.length === displaySetInstanceUIDs.length &&
+          previous.every((id, index) => id === displaySetInstanceUIDs[index])
+        ) {
+          return previous;
+        }
+        return displaySetInstanceUIDs;
+      });
+
+      displaySetInstanceUIDs
+        .map(id => displaySets.find(displaySet => displaySet.displaySetInstanceUID === id))
+        .filter(displaySet => displaySet?.isLazyMetadataPlaceholder)
+        .forEach(scheduleThumbnailLoad);
+    },
+    [displaySets, scheduleThumbnailLoad]
+  );
 
   // multiple can be true or false
   const updateActionIconValue = actionIcon => {
