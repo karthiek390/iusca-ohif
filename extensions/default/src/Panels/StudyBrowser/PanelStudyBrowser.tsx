@@ -49,6 +49,7 @@ function PanelStudyBrowser({
   const [displaySets, setDisplaySets] = useState([]);
   const [displaySetsLoadingState, setDisplaySetsLoadingState] = useState({});
   const [thumbnailImageSrcMap, setThumbnailImageSrcMap] = useState({});
+  const [lazyPreviewUnavailable, setLazyPreviewUnavailable] = useState({});
   const [lazyCatalogDisplaySets, setLazyCatalogDisplaySets] = useState([]);
   const [jumpToDisplaySet, setJumpToDisplaySet] = useState(null);
   const [visibleThumbnailDisplaySetInstanceUIDs, setVisibleThumbnailDisplaySetInstanceUIDs] =
@@ -100,10 +101,11 @@ function PanelStudyBrowser({
           imageSrc: thumbnailImageSrcMap[displaySetInstanceUID],
           isLazyMetadataPlaceholder: true,
           isLazyMetadataLoading: series.hydrating,
+          isLazyPreviewUnavailable: lazyPreviewUnavailable[displaySetInstanceUID] === true,
         };
       })
     );
-  }, [lazySeriesMetadataEnabled, thumbnailImageSrcMap]);
+  }, [lazyPreviewUnavailable, lazySeriesMetadataEnabled, thumbnailImageSrcMap]);
 
   const mergeLazyCatalogDisplaySets = useCallback(
     mappedDisplaySets => {
@@ -159,15 +161,36 @@ function PanelStudyBrowser({
     thumbnailCacheOrderRef.current = order;
   }, []);
 
+  const markLazyPreviewUnavailable = useCallback(displaySetInstanceUID => {
+    setLazyPreviewUnavailable(previous => {
+      if (previous[displaySetInstanceUID]) {
+        return previous;
+      }
+      return { ...previous, [displaySetInstanceUID]: true };
+    });
+  }, []);
+
   const loadThumbnail = useCallback(
     async dSet => {
       if (dSet.isLazyMetadataPlaceholder) {
         const displaySetInstanceUID = dSet.displaySetInstanceUID;
-        const thumbnailSrc = await dataSource.retrieve.series.thumbnail({
-          StudyInstanceUID: dSet.StudyInstanceUID,
-          SeriesInstanceUID: dSet.SeriesInstanceUID,
-          instanceCount: dSet.numInstances,
-        });
+        if (thumbnailNoImageModalities.includes(dSet.Modality)) {
+          markLazyPreviewUnavailable(displaySetInstanceUID);
+          return;
+        }
+
+        let thumbnailSrc;
+        try {
+          thumbnailSrc = await dataSource.retrieve.series.thumbnail({
+            StudyInstanceUID: dSet.StudyInstanceUID,
+            SeriesInstanceUID: dSet.SeriesInstanceUID,
+            instanceCount: dSet.numInstances,
+          });
+        } catch {
+          // Some MR-labelled objects, such as Raw Data Storage, have no renderable pixels.
+          markLazyPreviewUnavailable(displaySetInstanceUID);
+          return;
+        }
 
         if (
           thumbnailSrc &&
@@ -205,7 +228,13 @@ function PanelStudyBrowser({
         }
       }
     },
-    [dataSource, displaySetService, getImageSrc, storeThumbnailImageSrc]
+    [
+      dataSource,
+      displaySetService,
+      getImageSrc,
+      markLazyPreviewUnavailable,
+      storeThumbnailImageSrc,
+    ]
   );
 
   const scheduleThumbnailLoad = useCallback(
@@ -730,6 +759,7 @@ function _mapDisplaySets(displaySets, displaySetLoadingState, thumbnailImageSrcM
         isHydratedForDerivedDisplaySet: ds.isHydrated,
         isLazyMetadataPlaceholder: ds.isLazyMetadataPlaceholder,
         isLazyMetadataLoading: ds.isLazyMetadataLoading,
+        isLazyPreviewUnavailable: ds.isLazyPreviewUnavailable,
       });
     });
 
